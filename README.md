@@ -25,14 +25,14 @@ File Binary: Tổng hợp các file .bin sẵn sàng để flash trực tiếp l
 
 Giúp người dùng có thể trải nghiệm nhanh chóng mà chưa cần tự build mã nguồn từ đầu.
 
-🚀 Hướng dẫn Build Firmware (cập nhật video trong thời gian tới)
-Phần hướng dẫn chi tiết từng bước cách tự build firmware Xiaozhi AI tiếng Việt sẽ sớm được cập nhật tại đây:
+🚀 File Hướng dẫn Build Firmware [click here](https://github.com/vdlaptrinh/Xiaozhi_AI_VN/blob/main/huong-dan-build-xiaozhi.md)
+Chi tiết từng bước cách tự build firmware Xiaozhi AI tiếng Việt:
 
-[ ] Cài đặt môi trường phát triển (ESP-IDF / PlatformIO).
+[X] Cài đặt môi trường phát triển (ESP-IDF / PlatformIO).
 
-[ ] Cấu hình kết nối Audio (I2S, Micro, Loa) và Wi-Fi/Server AI.
+[X] Cấu hình kết nối Audio (I2S, Micro, Loa) và Wi-Fi/Server AI.
 
-[ ] Tiến hành biên dịch và nạp firmware (flash) vào ESP32-S3.
+[X] Tiến hành biên dịch và nạp firmware (flash) vào ESP32-S3.
 
 🤝 Đóng góp & Phát triển
 Mọi đóng góp, báo lỗi (issue) hoặc thảo luận cải tiến phần cứng/phần mềm đều được hoan nghênh để hoàn thiện cộng đồng Xiaozhi AI tại Việt Nam!
