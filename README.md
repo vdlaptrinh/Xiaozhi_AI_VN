@@ -10,6 +10,7 @@ Kho lưu trữ mã nguồn, phần cứng và hướng dẫn cấu hình để t
 Xiaozhi_AI_VN/
 ├── esp32s3_kit/         # Thiết kế phần cứng (KiCAD 10 project, có sẵn file xuất PCB PDF)
 ├── firmware/            # Chứa các file binary (.bin) biên dịch sẵn cho từng loại board
+├── huong-dan-build-xiaozhi.md            # Hướng dẫn build xiaozhi
 └── README.md            # Tài liệu giới thiệu dự án
 ```
 ---
@@ -24,7 +25,7 @@ File Binary: Tổng hợp các file .bin sẵn sàng để flash trực tiếp l
 
 Giúp người dùng có thể trải nghiệm nhanh chóng mà chưa cần tự build mã nguồn từ đầu.
 
-🚀 Hướng dẫn Build Firmware (Đang cập nhật)
+🚀 Hướng dẫn Build Firmware (cập nhật video trong thời gian tới)
 Phần hướng dẫn chi tiết từng bước cách tự build firmware Xiaozhi AI tiếng Việt sẽ sớm được cập nhật tại đây:
 
 [ ] Cài đặt môi trường phát triển (ESP-IDF / PlatformIO).
