@@ -11,7 +11,7 @@ Xiaozhi_AI_VN/
 ├── esp32s3_kit/         # Thiết kế phần cứng (KiCAD 10 project, có sẵn file xuất PCB PDF)
 ├── firmware/            # Chứa các file binary (.bin) biên dịch sẵn cho từng loại board
 └── README.md            # Tài liệu giới thiệu dự án
-
+```
 ---
 
 1. Thư mục esp32s3_kit/
