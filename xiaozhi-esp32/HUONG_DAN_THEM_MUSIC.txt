@@ -1,0 +1,452 @@
+==================================================================
+HUONG DAN THEM TINH NANG MCP MUSIC VAO XIAOZHI-ESP32
+==================================================================
+
+Hướng dẫn này tổng hợp ĐẦY ĐỦ các bước đã thực hiện để port tính năng "MCP music"
+từ dự án cũ xiaozhi-esp32-music sang dự án mới xiaozhi-esp32.
+
+- Dự án đích: D:\DAI\esp32_projects\xiaozhi-esp32
+- Dự án nguồn: D:\DAI\esp32_projects\xiaozhi-esp32-music
+
+------------------------------------------------------------------
+1. TONG QUAN
+------------------------------------------------------------------
+
+Tính năng gồm:
+
+1. Trình phát nhạc MP3 stream (Esp32Music): gọi API
+   http://110.42.59.54:2233/stream_pcm?song=... để lấy audio_url,
+   tải MP3 theo stream, decode bằng libhelix, phát PCM ra loa,
+   hiển thị tên bài hát + lời bài hát (lyrics LRC).
+2. 2 tool MCP: self.music.play_song và self.music.set_display_mode.
+3. Tự động dừng nhạc khi thiết bị rời khỏi trạng thái idle
+   (bấm nút / wake word).
+
+Có 3 FILE MỚI và 8 FILE SỬA (chi tiết bên dưới).
+
+------------------------------------------------------------------
+2. CAC FILE MOI (THEM MOI)
+------------------------------------------------------------------
+
+Đều nằm trong thư mục: main\boards\common\
+
+------------------------------------------------------------------
+2.1. music.h — interface cơ sở (tạo mới)
+------------------------------------------------------------------
+
+Nội dung đầy đủ:
+
+    #ifndef MUSIC_H
+    #define MUSIC_H
+
+    #include <cstdint>
+    #include <string>
+
+    class Music {
+    public:
+        // 显示模式
+        enum class DisplayMode {
+            kSpectrum = 0,  // 频谱显示
+            kLyrics = 1     // 歌词显示
+        };
+
+        virtual ~Music() = default;
+
+        virtual bool Download(const std::string& song_name, const std::string& artist_name = "") = 0;
+        virtual std::string GetDownloadResult() = 0;
+
+        virtual bool StartStreaming(const std::string& music_url) = 0;
+        virtual bool StopStreaming() = 0;
+        virtual size_t GetBufferSize() const = 0;
+        virtual bool IsDownloading() const = 0;
+        virtual int16_t* GetAudioData() = 0;
+
+        virtual void SetDisplayMode(DisplayMode mode) = 0;
+        virtual DisplayMode GetDisplayMode() const = 0;
+    };
+
+    #endif  // MUSIC_H
+
+Ghi chú: khác với bản nguồn, DisplayMode được đưa vào interface Music
+(thay vì chỉ ở trong Esp32Music) để mcp_server.cc dùng được mà không
+cần include esp32_music.h.
+
+------------------------------------------------------------------
+2.2. esp32_music.h — header lớp Esp32Music (tạo mới)
+------------------------------------------------------------------
+
+Gồm: các thành viên std::thread (play/download/lyric), bộ đệm
+std::queue<AudioChunk>, biến MP3 HMP3Decoder, enum DisplayMode
+(alias của Music::DisplayMode), các hàm private
+DownloadAudioStream/PlayAudioStream/ClearAudioBuffer/...,
+public API Download/GetDownloadResult/StartStreaming/StopStreaming/
+GetBufferSize/IsDownloading/GetAudioData/SetDisplayMode/GetDisplayMode.
+
+Điểm quan trọng so với bản nguồn:
+- Đã BỎ khai báo hàm ResetSampleRate(); (API cũ không có trong codec mới).
+- Có thêm #include <cstdint>.
+- DisplayMode = Music::DisplayMode.
+
+------------------------------------------------------------------
+2.3. esp32_music.cc — cài đặt trình phát (tạo mới)
+------------------------------------------------------------------
+
+~1560 dòng, port từ esp32_music.cc của dự án nguồn với các thay đổi
+bắt buộc sau:
+
+1) Constructor: display_mode_(DisplayMode::kLyrics), log "default lyrics
+   display mode", vẫn InitializeMp3Decoder().
+   (Bản nguồn: DISPLAY_MODE_LYRICS, log "default spectrum display mode").
+
+2) Download(): bỏ log "qq交流群826072986"; các bước gọi API / auth header /
+   JSON giống y hệt; dùng DisplayMode::kLyrics.
+
+3) StartStreaming(): giữ nguyên (esp_pthread_set_cfg 8KB stack, spawn
+   download + play thread); IDF 6.1 vẫn có esp_pthread_set_cfg.
+
+4) StopStreaming(): BỎ ResetSampleRate(), display->SetMusicInfo(""),
+   display->stopFft(); vẫn join thread + timeout 1s + detach nếu quá lâu.
+
+5) PlayAudioStream():
+   - Chặn đầu: BỎ abort khi !codec->output_enabled(); chỉ check codec null;
+     sau khi có đủ buffer thì codec->EnableOutput(true) nếu output đang tắt.
+   - Trạng thái: BỎ app.ToggleChatState() (bản cũ ép về idle); mọi trạng thái
+     khác idle chỉ delay(50ms); continue → tạm dừng, khi idle tự chạy tiếp.
+   - Tên bài: thay display->SetMusicInfo("《...》播放中...") + display->start()
+     bằng display->SetChatMessage("system", "《...》播放中...").
+   - Spectrum: chỉ log "$not supported" (no-op).
+   - Xuất PCM: BỎ app.AddAudioData(); tự resample tuyến tính về
+     codec->output_sample_rate() rồi codec->OutputData(output_pcm);
+     trước mỗi frame nếu !codec->output_enabled() thì codec->EnableOutput(true);
+     sau mỗi frame gọi
+     Application::GetInstance().GetAudioService().MarkOutputActive()
+     (chống power-save tắt loa giữa bài).
+
+6) Chuyển stereo->mono: gộp dùng mono_buffer.assign(...) cho mono/other
+   (bản cũ nhân đôi code giữa 2 nhánh).
+
+7) final_pcm_data_fft: ghi bản ĐÃ resample, malloc theo độ dài thực tế
+   (bản cũ ghi mono gốc chưa resample).
+
+8) ResetSampleRate(): XÓA HOÀN TOÀN (API codec->SetOutputSampleRate(-1)/
+   original_output_sample_rate() không tồn tại ở đích).
+
+9) DownloadLyrics(): bỏ log "qq交流群"; retry/redirect/read logic giữ nguyên.
+
+10) UpdateLyricDisplay(): display->SetChatMessage("lyric", ...) GIỮ NGUYÊN
+    (đích cũng có API này).
+
+11) SetDisplayMode(): dùng DisplayMode::kSpectrum/kLyrics
+    (bản cũ: DISPLAY_MODE_SPECTRUM/LYRICS).
+
+Các helper giữ nguyên: get_device_mac, get_device_chip_id,
+generate_dynamic_key (SHA256, secret "your-esp32-secret-key-2024"),
+add_auth_headers, url_encode, buildUrlWithParams (không dùng),
+ResamplePcm (thêm mới).
+
+QUAN TRONG với IDF 6.1 (mbedtls 4.x / TF-PSA-Crypto):
+- Header mbedtls/sha256.h KHÔNG còn public (chuyển vào thư mục private).
+  Build sẽ báo: fatal error: mbedtls/sha256.h: No such file or directory.
+- BẮT BUỘC sửa trong esp32_music.cc:
+    #include <mbedtls/sha256.h>            ->  #include <mbedtls/md.h>
+    mbedtls_sha256((unsigned char*)data.c_str(), data.length(), hash, 0);
+        ->
+    const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    mbedtls_md(md_info, (unsigned char*)data.c_str(), data.length(), hash);
+- mbedtls/md.h nằm cùng thư mục public với mbedtls/base64.h (include path đã có
+  qua mbedtls trong PRIV_REQUIRES của main); mbedtls_md() được build sẵn trong
+  target extras của component mbedtls -> biên dịch + link bình thường
+  (được ~17 component khác trong IDF dùng chung).
+
+QUAN TRONG - cac diem phai sua them khi port sang IDF 6.1 (da lam trong
+esp32_music.cc):
+1) HTTP API tra std::expected<int, NetworkError> (managed component
+   78__esp-ml307), KHONG con tra int truc tiep. Sua tai 5 cho
+   (Download, DownloadAudioStream, DownloadLyrics):
+   - GetStatusCode(): dung
+        auto status_code = http->GetStatusCode();
+        if (!status_code || *status_code != 200) { ... }
+     In log dung *status_code.
+   - Read(): dung
+        auto read_result = http->Read(...);
+        if (!read_result) { ... read_result.error().ToString() ... }
+        int n = *read_result;
+2) ESP-IDF build voi -fno-exceptions -> KHONG duoc dung try/catch.
+   Da thay khoi std::stoi/std::stof trong ParseLyrics bang ham helper
+   parse_lrc_timestamp() (tu parse "mm:ss.xx" khong nem exception;
+   loi -> log Failed to parse time roi continue).
+3) buildUrlWithParams() khong dung -> warn -Wunused-function, khong chan
+   build (co -Wno-error=unused-function), GIU NGUYEN cho khop ban nguon.
+
+------------------------------------------------------------------
+3. CAC FILE SUA (THEM/XOA DONG CU THE)
+------------------------------------------------------------------
+
+Cách đọc: THEM = thêm dòng mới; SUA/THAY = thay cả đoạn cũ bằng đoạn mới;
+XOA = xóa dòng trong bản nguồn. Tất cả đường dẫn nằm trong
+D:\DAI\esp32_projects\xiaozhi-esp32\main\
+
+------------------------------------------------------------------
+3.1. boards\common\board.h
+------------------------------------------------------------------
+
+1) THEM 1 dòng vào nhóm include (sau dòng #include "assets.h", dòng 16):
+       #include "music.h"
+
+2) THAY dòng destructor:
+       XOA dòng cũ:        virtual ~Board() = default;
+       THEM dòng mới:      virtual ~Board();     (định nghĩa trong board.cc)
+
+3) THEM 2 dòng vào khối protected (sau dòng std::string uuid_;):
+       // 音乐播放器（MCP音乐功能）
+       Music* music_ = nullptr;
+
+4) THEM 1 dòng (sau dòng virtual Camera* GetCamera();):
+       virtual Music* GetMusic();
+
+   → thứ tự hàm: GetDisplay(); GetCamera(); GetMusic(); GetNetwork(); ...
+
+------------------------------------------------------------------
+3.2. boards\common\board.cc
+------------------------------------------------------------------
+
+1) THEM include đầu file (sau #include "display/display.h", dòng 4):
+       #include "esp32_music.h"
+
+2) SUA constructor — sau dòng log UUID, THEM dòng khởi tạo:
+       Board::Board() {
+           Settings settings("board", true);
+           uuid_ = settings.GetString("uuid");
+           if (uuid_.empty()) {
+               uuid_ = GenerateUuid();
+               settings.SetString("uuid", uuid_);
+           }
+           ESP_LOGI(TAG, "UUID=%s SKU=%s", uuid_.c_str(), BOARD_NAME);
+
+           music_ = new Esp32Music();        <-- THEM dòng này
+       }
+
+3) THEM destructor mới ngay sau constructor (trước GenerateUuid):
+       Board::~Board() {
+           if (music_ != nullptr) {
+               delete music_;
+               music_ = nullptr;
+           }
+       }
+
+4) THEM hàm GetMusic() ngay sau Camera* Board::GetCamera() { return nullptr; }
+   (dòng ~66):
+       Music* Board::GetMusic() { return music_; }
+
+------------------------------------------------------------------
+3.3. application.cc
+------------------------------------------------------------------
+
+SUA/THAY khối "Add state change listeners" (trong Application::Initialize(),
+dòng ~97).
+
+Đoạn cũ (2 dòng bên trong lambda):
+       // Add state change listeners
+       state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
+           xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
+       });
+
+Đoạn mới (thêm khối if dừng nhạc):
+       // Add state change listeners
+       state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
+           // Stop music streaming when leaving the idle state (e.g. wake word / button pressed)
+           if (old_state == kDeviceStateIdle && new_state != kDeviceStateIdle) {
+               auto music = Board::GetInstance().GetMusic();
+               if (music != nullptr) {
+                   ESP_LOGI(TAG, "Device leaving idle state, stopping music streaming");
+                   music->StopStreaming();
+               }
+           }
+           xEventGroupSetBits(event_group_, MAIN_EVENT_STATE_CHANGED);
+       });
+
+→ Thực chất: giữ nguyên dòng xEventGroupSetBits, THEM khối if (8 dòng)
+ở phía trên nó.
+
+Ghi chú: kDeviceStateIdle định nghĩa trong main/device_state.h, đã có sẵn
+(không cần sửa).
+
+------------------------------------------------------------------
+3.4. mcp_server.cc
+------------------------------------------------------------------
+
+1) THEM include <cctype> vào nhóm STL (dòng ~11, sau #include <algorithm>):
+       #include <algorithm>
+       #include <cctype>      <-- THEM
+       #include <cstring>
+       #include <iterator>
+
+2) THEM khối 2 tool music trong McpServer::AddCommonTools(), ngay sau khối
+   #ifdef HAVE_LVGL ... #endif (camera) và TRƯỚC comment
+   "// Restore the original tools list..." (kết quả dòng 119-167):
+
+       auto music = board.GetMusic();
+       if (music) {
+           AddTool("self.music.play_song",
+                   "Search and play a song through the built-in music player.\n"
+                   "Args:\n"
+                   "  `song_name`: The name of the song to play.\n"
+                   "  `artist_name`: The name of the singer (optional).\n"
+                   "Return:\n"
+                   "  A JSON object indicating that the song has started playing.\n"
+                   "The music only plays while the device is in the idle state.",
+                   PropertyList({Property("song_name", kPropertyTypeString),
+                                 Property("artist_name", kPropertyTypeString, std::string(""))}),
+                   [music](const PropertyList& properties) -> ToolResult {
+                       auto song_name = properties["song_name"].value<std::string>();
+                       auto artist_name = properties["artist_name"].value<std::string>();
+                       if (!music->Download(song_name, artist_name)) {
+                           return std::unexpected("Failed to get the music resource, please try "
+                                                  "another song");
+                       }
+                       cJSON* result = cJSON_CreateObject();
+                       if (result == nullptr) {
+                           return std::unexpected("Failed to allocate music result");
+                       }
+                       cJSON_AddStringToObject(result, "message", "The song has started playing");
+                       cJSON_AddStringToObject(result, "song_name", song_name.c_str());
+                       return result;
+                   });
+
+           AddTool("self.music.set_display_mode",
+                   "Set the display mode of the music player. The mode can be `spectrum` or "
+                   "`lyrics`. Note: `spectrum` is not supported in the current port and only "
+                   "`lyrics` mode shows content on the screen.",
+                   PropertyList({Property("mode", kPropertyTypeString)}),
+                   [music](const PropertyList& properties) -> ToolResult {
+                       auto mode = properties["mode"].value<std::string>();
+                       std::transform(mode.begin(), mode.end(), mode.begin(),
+                                      [](unsigned char c) { return std::tolower(c); });
+                       if (mode == "spectrum" || mode == "频谱") {
+                           music->SetDisplayMode(Music::DisplayMode::kSpectrum);
+                           return std::string("Display mode set to spectrum");
+                       }
+                       if (mode == "lyrics" || mode == "歌词") {
+                           music->SetDisplayMode(Music::DisplayMode::kLyrics);
+                           return std::string("Display mode set to lyrics");
+                       }
+                       return std::unexpected("Invalid display mode, please use 'spectrum' or "
+                                              "'lyrics'");
+                   });
+       }
+
+Ghi chú: biến board đã có trong scope (auto& board = Board::GetInstance();
+ở đầu AddCommonTools). File mcp_server.cc không cần include thêm
+(music.h kéo theo qua board.h).
+
+------------------------------------------------------------------
+3.5. CMakeLists.txt (thư mục main\)
+------------------------------------------------------------------
+
+THEM 1 dòng vào khối "Add board common files"
+list(APPEND SOURCES ...) (dòng ~66, sau "boards/common/system_reset.cc"):
+       "boards/common/system_reset.cc"
+       "boards/common/esp32_music.cc"     <-- THEM
+   )
+
+------------------------------------------------------------------
+3.6. idf_component.yml (thư mục main\)
+------------------------------------------------------------------
+
+THEM 2 dòng dependency libhelix (dòng ~113, sau khối espressif/esp_wifi_remote):
+       espressif/esp_wifi_remote:
+         version: ^1.6.4
+         rules:
+         - if: target in [esp32p4]
+       chmorgan/esp-libhelix-mp3:            <-- THEM
+         version: '*'                        <-- THEM
+       espfriends/servo_dog_ctrl:
+
+-> Component này là bộ giải mã MP3 (mp3dec.h) mà esp32_music.h/.cc cần.
+
+------------------------------------------------------------------
+3.7. audio\audio_service.h
+------------------------------------------------------------------
+
+THEM khai báo method public (sau void ResetDecoder();, dòng ~156):
+       /**
+        * Mark the audio output as recently active so that the audio power-saving
+        * timer does not disable the speaker. Used by the music player which writes
+        * PCM directly to the codec.
+        */
+       void MarkOutputActive();
+
+------------------------------------------------------------------
+3.8. audio\audio_service.cc
+------------------------------------------------------------------
+
+THEM định nghĩa (ngay trước void AudioService::SetModelsList(...), dòng ~855):
+       void AudioService::MarkOutputActive() { last_output_time_ = std::chrono::steady_clock::now(); }
+
+Giai thich: AudioService mới có "power save" tắt loa sau 15s không phát.
+Nhạc viết PCM trực tiếp xuống codec (không qua audio service) nên
+last_output_time_ không được làm mới → nếu không gọi hàm này loa sẽ bị
+tắt giữa bài. MarkOutputActive() giữ loa bật suốt khi phát nhạc.
+
+------------------------------------------------------------------
+4. FILE NÀO KHÔNG CẦN SỬA (đã kiểm tra)
+------------------------------------------------------------------
+
+- main\application.h: đã có GetDeviceState(), GetAudioService(),
+  include device_state.h (đủ).
+- main\display\display.h, main\display\lcd_display.cc: đã có
+  SetChatMessage(role, content), dùng với role "system" / "lyric".
+- main\audio\audio_codec.h/.cc: đã có OutputData(std::vector<int16_t>&),
+  output_sample_rate(), output_enabled(), EnableOutput(bool).
+- main\device_state.h: đã có kDeviceStateIdle.
+- main\system_info.cc: đã có GetMacAddress() (dùng cho auth header).
+
+------------------------------------------------------------------
+5. KIEM TRA & BUILD
+------------------------------------------------------------------
+
+DA VERIFY: build thanh cong tren board freenove-esp32s3-display-2.8-lcd
+(ESP32-S3, IDF 6.1) -> tao build\xiaozhi.bin OK (partition app con 31%).
+Cac loi gap khi build va cach khac phuc da neu o muc 2.3 (mbedtls/md.h,
+std::expected, -fno-exceptions).
+
+Cach build (ESP-IDF 6.1 đã cài tại C:\esp\v6.1\esp-idf):
+
+    1) Nạp môi trường
+       . C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
+
+    2) Vào thư mục dự án, chọn board (ví dụ esp32s3 có PSRAM)
+       cd D:\DAI\esp32_projects\xiaozhi-esp32
+       idf.py set-target esp32s3        (chọn đúng board của bạn)
+       idf.py build
+
+Lưu ý 1: các cấp phát nhớ dùng MALLOC_CAP_SPIRAM → board KHÔNG có PSRAM
+sẽ không phát được nhạc (giữ đúng hành vi bản nguồn).
+
+Lưu ý 2: tool self.music.play_song chạy trên main loop → Download()
+(HTTP lấy JSON) có thể chẹn main loop vài trăm ms–1s; tải stream MP3
+vẫn chạy trên thread riêng.
+
+------------------------------------------------------------------
+6. DANH SACH DAY DU (BANG TONG KET)
+------------------------------------------------------------------
+
+   #  Thao tac                                   File                                  Loai
+  --------------------------------------------------------------------------------
+   1  Tao interface, enum DisplayMode            main\boards\common\music.h          THEM MOI
+   2  Header lop phat nhac                       main\boards\common\esp32_music.h    THEM MOI
+   3  Cai dat trinh phat nhac (port, ~1560)      main\boards\common\esp32_music.cc   THEM MOI
+   4  include music.h + member music_ + GetMusic
+      + destructor                               main\boards\common\board.h          SUA
+   5  new Esp32Music() + destructor + GetMusic() main\boards\common\board.cc         SUA
+   6  Dung nhac khi roi idle                     main\application.cc                 SUA
+   7  Tool play_song + set_display_mode
+      + include <cctype>                         main\mcp_server.cc                  SUA
+   8  them boards/common/esp32_music.cc SOURCES  main\CMakeLists.txt                 SUA
+   9  them chmorgan/esp-libhelix-mp3             main\idf_component.yml              SUA
+  10  khai bao MarkOutputActive()                main\audio\audio_service.h          SUA
+  11  dinh nghia MarkOutputActive()              main\audio\audio_service.cc         SUA
+
+==================================================================
+HẾT
+==================================================================
